@@ -3,15 +3,17 @@ author: yaito3014
 description: Notifies about C++ warnings in GitHub Actions
 
 inputs:
+  # Cloudflare Worker URL to exchange a GitHub OIDC token for an installation
+  # access token (requires id-token: write permission on the job)
+  WORKER_URL:
+    required: false
+    default: https://cpp-warning-notifier.iris-cpp.org
   IGNORE_NO_MARKER:
+    required: false
     default: false
   RUN_ID:
     required: true
   JOB_ID:
-    required: true
-  # Cloudflare Worker URL to exchange a GitHub OIDC token for an installation
-  # access token (requires id-token: write permission on the job)
-  WORKER_URL:
     required: true
   JOB_REGEX:
     required: true
