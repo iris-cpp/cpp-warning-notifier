@@ -215,7 +215,7 @@ const body = generateTable(rows);
 console.log("body is", body);
 
 if (body) {
-  console.log("outdates previous comments");
+  console.log("checking previous comments");
   const { data: comments } = await octokit.issues.listComments({
     owner,
     repo,
@@ -253,7 +253,14 @@ if (body) {
       );
       await postComment();
       break;
-    case "skip":
+    case "update":
+      console.log("updating links in the previous comment");
+      await octokit.issues.updateComment({
+        owner,
+        repo,
+        comment_id: action.previous.id,
+        body,
+      });
       break;
   }
 }

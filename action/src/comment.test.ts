@@ -23,12 +23,13 @@ describe("decideCommentAction", () => {
     assert.deepEqual(decideCommentAction(successTable, previous), { kind: "replace", previous });
   });
 
-  it("skips when neither table has a warning", () => {
+  it("updates the previous comment in place when neither table has a warning", () => {
     const previous = { id: 7, body: successTable };
-    assert.deepEqual(decideCommentAction(successTable, previous), { kind: "skip" });
+    assert.deepEqual(decideCommentAction(successTable, previous), { kind: "update", previous });
   });
 
   it("treats a previous comment without a body as having no warning", () => {
-    assert.deepEqual(decideCommentAction(successTable, { id: 7 }), { kind: "skip" });
+    const previous = { id: 7 };
+    assert.deepEqual(decideCommentAction(successTable, previous), { kind: "update", previous });
   });
 });

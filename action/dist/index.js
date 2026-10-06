@@ -3781,13 +3781,14 @@ const Octokit = Octokit$1.plugin(requestLog, legacyRestEndpointMethods, paginate
 );
 
 // Only a warning justifies notifying reviewers with a fresh comment (and
-// marking the old one outdated); otherwise the bot stays quiet.
+// marking the old one outdated). Otherwise the previous comment is edited in
+// place so its links point at the latest run without a new notification.
 function decideCommentAction(newBody, previous) {
     if (previous === undefined)
         return { kind: "create" };
     if (hasWarning(newBody) || hasWarning(previous.body ?? ""))
         return { kind: "replace", previous };
-    return { kind: "skip" };
+    return { kind: "update", previous };
 }
 function hasWarning(body) {
     return body.includes("warning");
@@ -3953,7 +3954,7 @@ function generateTable(entries) {
 const body = generateTable(rows);
 console.log("body is", body);
 if (body) {
-    console.log("outdates previous comments");
+    console.log("checking previous comments");
     const { data: comments } = await octokit.issues.listComments({
         owner,
         repo,
@@ -3983,6 +3984,15 @@ if (body) {
           }
         }`, { id: action.previous.node_id });
             await postComment();
+            break;
+        case "update":
+            console.log("updating links in the previous comment");
+            await octokit.issues.updateComment({
+                owner,
+                repo,
+                comment_id: action.previous.id,
+                body,
+            });
             break;
     }
 }
