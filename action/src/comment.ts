@@ -1,3 +1,9 @@
+export const statuses = {
+  success: "✅success",
+  warning: "⚠️warning",
+  error: "❌error",
+} as const;
+
 export interface CommentLike {
   readonly body?: string | undefined;
 }
@@ -19,6 +25,10 @@ export function decideCommentAction<T extends CommentLike>(
   return { kind: "update", previous };
 }
 
-function hasWarning(body: string): boolean {
-  return body.includes("warning");
+// Matches the status cells rendered by generateTable; link URLs may contain
+// "warning" (e.g. a repository name), so only the link text is inspected.
+const statusCell = /<td><a href="[^"]*">([^<]*)<\/a><\/td>/g;
+
+function hasWarning(table: string): boolean {
+  return [...table.matchAll(statusCell)].some((m) => m[1] === statuses.warning);
 }

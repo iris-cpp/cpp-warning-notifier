@@ -1,7 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
-import { decideCommentAction } from "./comment.ts";
+import { decideCommentAction, statuses } from "./comment.ts";
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
   console.log("not a pull request, exiting.");
@@ -87,19 +87,19 @@ for (const job of jobList.jobs) {
     }
   }
 
-  let compileResult = "✅success";
+  let compileResult: string = statuses.success;
   let firstIssueLine = 1;
   const warningIdx = lines.findIndex((line) => line.match(warningRegex));
   console.log(`warningIdx: ${warningIdx}`);
   if (warningIdx !== -1) {
-    compileResult = "⚠️warning";
+    compileResult = statuses.warning;
     firstIssueLine = warningIdx - offset + 1;
     console.log(`matched warning line: ${lines[warningIdx]}`);
   } else {
     const errorIdx = lines.findIndex((line) => line.match(errorRegex));
     console.log(`errorIdx: ${errorIdx}`);
     if (errorIdx !== -1) {
-      compileResult = "❌error";
+      compileResult = statuses.error;
       firstIssueLine = errorIdx - offset + 1;
       console.log(`matched error line: ${lines[errorIdx]}`);
     }

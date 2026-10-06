@@ -3780,6 +3780,11 @@ const Octokit = Octokit$1.plugin(requestLog, legacyRestEndpointMethods, paginate
   }
 );
 
+const statuses = {
+    success: "✅success",
+    warning: "⚠️warning",
+    error: "❌error",
+};
 // Only a warning justifies notifying reviewers with a fresh comment (and
 // marking the old one outdated). Otherwise the previous comment is edited in
 // place so its links point at the latest run without a new notification.
@@ -3790,8 +3795,11 @@ function decideCommentAction(newBody, previous) {
         return { kind: "replace", previous };
     return { kind: "update", previous };
 }
-function hasWarning(body) {
-    return body.includes("warning");
+// Matches the status cells rendered by generateTable; link URLs may contain
+// "warning" (e.g. a repository name), so only the link text is inspected.
+const statusCell = /<td><a href="[^"]*">([^<]*)<\/a><\/td>/g;
+function hasWarning(table) {
+    return [...table.matchAll(statusCell)].some((m) => m[1] === statuses.warning);
 }
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
@@ -3855,12 +3863,12 @@ for (const job of jobList.jobs) {
             continue;
         }
     }
-    let compileResult = "✅success";
+    let compileResult = statuses.success;
     let firstIssueLine = 1;
     const warningIdx = lines.findIndex((line) => line.match(warningRegex));
     console.log(`warningIdx: ${warningIdx}`);
     if (warningIdx !== -1) {
-        compileResult = "⚠️warning";
+        compileResult = statuses.warning;
         firstIssueLine = warningIdx - offset + 1;
         console.log(`matched warning line: ${lines[warningIdx]}`);
     }
@@ -3868,7 +3876,7 @@ for (const job of jobList.jobs) {
         const errorIdx = lines.findIndex((line) => line.match(errorRegex));
         console.log(`errorIdx: ${errorIdx}`);
         if (errorIdx !== -1) {
-            compileResult = "❌error";
+            compileResult = statuses.error;
             firstIssueLine = errorIdx - offset + 1;
             console.log(`matched error line: ${lines[errorIdx]}`);
         }
