@@ -1,6 +1,8 @@
 import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
+import { decideCommentAction } from "./comment.ts";
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
   console.log("not a pull request, exiting.");
   process.exit(0);
@@ -234,23 +236,25 @@ if (body) {
     .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
     .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-  if (sortedComments.length > 0) {
-    const latestComment = sortedComments[sortedComments.length - 1];
+  const action = decideCommentAction(body, sortedComments.at(-1));
 
-    if (body.includes("warning") || latestComment.body?.includes("warning")) {
+  switch (action.kind) {
+    case "create":
+      await postComment();
+      break;
+    case "replace":
       await gql(
         `mutation MinimizeComment($id: ID!) {
           minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
             clientMutationId
           }
         }`,
-        { id: latestComment.node_id },
+        { id: action.previous.node_id },
       );
-
       await postComment();
-    }
-  } else {
-    await postComment();
+      break;
+    case "skip":
+      break;
   }
 }
 

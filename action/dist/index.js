@@ -3780,6 +3780,19 @@ const Octokit = Octokit$1.plugin(requestLog, legacyRestEndpointMethods, paginate
   }
 );
 
+// Only a warning justifies notifying reviewers with a fresh comment (and
+// marking the old one outdated); otherwise the bot stays quiet.
+function decideCommentAction(newBody, previous) {
+    if (previous === undefined)
+        return { kind: "create" };
+    if (hasWarning(newBody) || hasWarning(previous.body ?? ""))
+        return { kind: "replace", previous };
+    return { kind: "skip" };
+}
+function hasWarning(body) {
+    return body.includes("warning");
+}
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
     console.log("not a pull request, exiting.");
     process.exit(0);
@@ -3958,19 +3971,19 @@ if (body) {
     const sortedComments = comments
         .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
         .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    if (sortedComments.length > 0) {
-        const latestComment = sortedComments[sortedComments.length - 1];
-        if (body.includes("warning") || latestComment.body?.includes("warning")) {
+    const action = decideCommentAction(body, sortedComments.at(-1));
+    switch (action.kind) {
+        case "create":
+            await postComment();
+            break;
+        case "replace":
             await gql(`mutation MinimizeComment($id: ID!) {
           minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
             clientMutationId
           }
-        }`, { id: latestComment.node_id });
+        }`, { id: action.previous.node_id });
             await postComment();
-        }
-    }
-    else {
-        await postComment();
+            break;
     }
 }
 // ── Worker authentication helper ────────────────────────────────────────────

@@ -1,6 +1,7 @@
 {
   "extends": "@octokit/tsconfig",
   "compilerOptions": {
-    "outDir": "dist"
+    "outDir": "dist",
+    "rewriteRelativeImportExtensions": true
   }
 }
