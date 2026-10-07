@@ -29,7 +29,7 @@ describe("decideCommentAction", () => {
   });
 
   it("treats a previous comment without a body as having no warning", () => {
-    const previous = { id: 7 };
+    const previous: { id: number; body?: string } = { id: 7 };
     assert.deepEqual(decideCommentAction(successTable, previous), { kind: "update", previous });
   });
 });
