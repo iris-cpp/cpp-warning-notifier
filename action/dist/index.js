@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 function getUserAgent() {
   if (typeof navigator === "object" && "userAgent" in navigator) {
     return navigator.userAgent;
@@ -3802,6 +3804,184 @@ function hasWarning(table) {
     return [...table.matchAll(statusCell)].some((m) => m[1] === statuses.warning);
 }
 
+const timestamp = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z /;
+// GCC and Clang: file:line[:column]: severity: message [flag]
+const gccLike = /^(.+?):(\d+)(?::(\d+))?: (warning|error): (.*?)(?: \[([^\]]+)\])?$/;
+// MSVC: file(line[,column]): severity CODE: message
+const msvc = /^(.+?)\((\d+)(?:,(\d+))?\): (warning|error) ([A-Z]+\d+): (.*)$/;
+// Anything else the former line-based detection counted, e.g. linker output.
+const bare = /(warning|error)(?: .\d+)?: (.*)$/;
+function parseDiagnostics(log, repository) {
+    const workspace = new RegExp(`^.*?[\\\\/]${escapeRegExp(repository)}[\\\\/]${escapeRegExp(repository)}[\\\\/]`);
+    const relative = (file) => file.replace(workspace, "").replaceAll("\\", "/");
+    const number = (s) => (s === undefined ? undefined : Number(s));
+    const found = [];
+    log.split("\n").forEach((raw, logLine) => {
+        const line = raw.replace(timestamp, "");
+        const g = line.match(gccLike);
+        if (g) {
+            found.push({
+                severity: g[4],
+                file: relative(g[1]),
+                line: Number(g[2]),
+                column: number(g[3]),
+                message: g[5],
+                flag: g[6],
+                logLine,
+            });
+            return;
+        }
+        const m = line.match(msvc);
+        if (m) {
+            found.push({
+                severity: m[4],
+                file: relative(m[1]),
+                line: Number(m[2]),
+                column: number(m[3]),
+                message: m[6],
+                flag: m[5],
+                logLine,
+            });
+            return;
+        }
+        const b = line.match(bare);
+        if (b) {
+            found.push({
+                severity: b[1],
+                file: undefined,
+                line: undefined,
+                column: undefined,
+                message: b[2],
+                flag: undefined,
+                logLine,
+            });
+        }
+    });
+    return found;
+}
+function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Two builds have "the same" warnings in a cell when the multiset of
+// (file, flag, message) is equal; lines and columns move with unrelated edits.
+function warningDigest(warnings) {
+    const identities = warnings
+        .map((w) => JSON.stringify([w.file ?? "", w.flag ?? "", w.message]))
+        .sort();
+    return createHash("sha256").update(JSON.stringify(identities)).digest("hex");
+}
+const blockPrefix = "<!-- cpp-warning-notifier:v1 ";
+const blockSuffix = " -->";
+function encodeBlock(report) {
+    const block = {
+        v: 1,
+        cells: report.cells.map((c) => ({ env: c.env, status: c.status, digest: warningDigest(c.warnings) })),
+    };
+    // "-->" may only occur inside JSON strings here, where > is equivalent.
+    const json = JSON.stringify(block).replaceAll("-->", "--\\u003e");
+    return `${blockPrefix}${json}${blockSuffix}`;
+}
+
+// GitHub rejects issue comment bodies longer than this.
+const maxBodyLength = 65536;
+function escapeHtml(s) {
+    return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+function compareStrings(a, b) {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+function sortCells(cells, layout) {
+    return [...cells].sort((a, b) => {
+        for (const field of layout.rowHeaderFields) {
+            const order = compareStrings(a.env[field] ?? "", b.env[field] ?? "");
+            if (order !== 0)
+                return order;
+        }
+        return compareStrings(a.env[layout.columnField] ?? "", b.env[layout.columnField] ?? "");
+    });
+}
+function renderRows(cells, depth, columns, cellMap, layout) {
+    if (depth === layout.rowHeaderFields.length) {
+        const representative = cells[0];
+        const rowFields = layout.rowHeaderFields.map((f) => representative.env[f]);
+        const tds = columns.map((col) => {
+            const cell = cellMap.get(JSON.stringify([...rowFields, col]));
+            if (!cell)
+                return "<td></td>";
+            return `<td><a href="${escapeHtml(cell.url)}">${escapeHtml(cell.status)}</a></td>`;
+        });
+        return [`${tds.join("")}</tr>`];
+    }
+    const field = layout.rowHeaderFields[depth];
+    const groups = Map.groupBy(cells, (c) => c.env[field] ?? "");
+    const result = [];
+    for (const [value, group] of groups) {
+        const childRows = renderRows(group, depth + 1, columns, cellMap, layout);
+        const rowspan = childRows.length;
+        const th = rowspan > 1
+            ? `<th rowspan="${rowspan}">${escapeHtml(value)}</th>`
+            : `<th>${escapeHtml(value)}</th>`;
+        childRows[0] = `${th}${childRows[0]}`;
+        result.push(...childRows);
+    }
+    return result;
+}
+function renderTable(report, layout) {
+    const columns = [...new Set(report.cells.map((c) => c.env[layout.columnField] ?? ""))].sort((a, b) => Number(a) - Number(b));
+    const sorted = sortCells(report.cells, layout);
+    const cellMap = new Map();
+    for (const cell of sorted) {
+        const key = JSON.stringify([
+            ...layout.rowHeaderFields.map((f) => cell.env[f]),
+            cell.env[layout.columnField],
+        ]);
+        cellMap.set(key, cell);
+    }
+    const theadCols = columns.map((v) => `<th>C++${v}</th>`).join("");
+    const thead = `<thead><tr><th colspan="${layout.rowHeaderFields.length}">Environment</th>${theadCols}</tr></thead>`;
+    const rows = renderRows(sorted, 0, columns, cellMap, layout);
+    const tbody = `<tbody>${rows.map((r) => `<tr>${r}`).join("")}</tbody>`;
+    return `<table>${thead}${tbody}</table>`;
+}
+function renderWarning(w) {
+    const location = w.file === undefined ? "" : `<code>${escapeHtml(w.file)}${w.line === undefined ? "" : `:${w.line}`}</code> `;
+    const flag = w.flag === undefined ? "" : ` <code>[${escapeHtml(w.flag)}]</code>`;
+    return `<li>${location}${escapeHtml(w.message)}${flag}</li>`;
+}
+function renderWarnings(report, layout, limitPerCell = Infinity) {
+    return sortCells(report.cells, layout)
+        .filter((c) => c.warnings.length > 0)
+        .map((c) => {
+        const title = [
+            ...layout.rowHeaderFields.map((f) => c.env[f] ?? ""),
+            `C++${c.env[layout.columnField] ?? ""}`,
+        ].join(" ");
+        const count = c.warnings.length;
+        const shown = c.warnings.slice(0, limitPerCell).map(renderWarning);
+        if (count > shown.length)
+            shown.push(`<li>… and ${count - shown.length} more</li>`);
+        const noun = count === 1 ? "warning" : "warnings";
+        return `<details><summary>${escapeHtml(title)}: ${count} ${noun}</summary><ul>${shown.join("")}</ul></details>`;
+    })
+        .join("");
+}
+function renderBody(report, layout) {
+    const table = renderTable(report, layout);
+    const block = encodeBlock(report);
+    // Shrink the visible lists until the body fits; the table and block always stay.
+    for (const limit of [Infinity, 50, 10, 3, 0]) {
+        const body = `${table}\n${renderWarnings(report, layout, limit)}\n${block}`;
+        if (body.length <= maxBodyLength)
+            return body;
+    }
+    return `${table}\n${block}`;
+}
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
     console.log("not a pull request, exiting.");
     process.exit(0);
@@ -3828,9 +4008,8 @@ const workerUrl = requireEnv("INPUT_WORKER_URL");
 const installationToken = await getInstallationTokenFromWorker(workerUrl);
 const octokit = new Octokit({ auth: installationToken });
 const gql = graphql2.defaults({ headers: { authorization: `token ${installationToken}` } });
-const warningRegex = /warning( .\d+)?:/;
-const errorRegex = /error( .\d+)?:/;
-const rows = [];
+// ── Job log processing ──────────────────────────────────────────────────────
+const cells = [];
 const { data: jobList } = await octokit.actions.listJobsForWorkflowRun({
     owner,
     repo,
@@ -3863,23 +4042,16 @@ for (const job of jobList.jobs) {
             continue;
         }
     }
+    const diagnostics = parseDiagnostics(jobLog, repo);
+    const warnings = diagnostics.filter((d) => d.severity === "warning");
+    const firstIssue = warnings[0] ?? diagnostics.find((d) => d.severity === "error");
+    console.log(`warnings: ${warnings.length}`);
     let compileResult = statuses.success;
     let firstIssueLine = 1;
-    const warningIdx = lines.findIndex((line) => line.match(warningRegex));
-    console.log(`warningIdx: ${warningIdx}`);
-    if (warningIdx !== -1) {
-        compileResult = statuses.warning;
-        firstIssueLine = warningIdx - offset + 1;
-        console.log(`matched warning line: ${lines[warningIdx]}`);
-    }
-    else {
-        const errorIdx = lines.findIndex((line) => line.match(errorRegex));
-        console.log(`errorIdx: ${errorIdx}`);
-        if (errorIdx !== -1) {
-            compileResult = statuses.error;
-            firstIssueLine = errorIdx - offset + 1;
-            console.log(`matched error line: ${lines[errorIdx]}`);
-        }
+    if (firstIssue !== undefined) {
+        compileResult = firstIssue.severity === "warning" ? statuses.warning : statuses.error;
+        firstIssueLine = firstIssue.logLine - offset + 1;
+        console.log(`first ${firstIssue.severity}: ${lines[firstIssue.logLine]}`);
     }
     const steps = job.steps ?? [];
     const stepIndex = steps.findIndex((step) => step.name.match(stepRegex) &&
@@ -3893,73 +4065,17 @@ for (const job of jobList.jobs) {
         console.log("job match fail");
         continue;
     }
-    rows.push({
-        url: `https://github.com/${owner}/${repo}/actions/runs/${runId}/job/${job.id}#step:${stepId}:${firstIssueLine}`,
+    cells.push({
+        env: jobMatch.groups ?? {},
         status: compileResult,
-        ...jobMatch.groups,
+        url: `https://github.com/${owner}/${repo}/actions/runs/${runId}/job/${job.id}#step:${stepId}:${firstIssueLine}`,
+        warnings,
     });
 }
-console.log("rows", rows);
+console.log("cells", cells);
 const rowHeaderFields = JSON.parse(requireEnv("INPUT_ROW_HEADERS"));
 const columnField = requireEnv("INPUT_COLUMN_HEADER");
-function escapeHtml(s) {
-    return s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-}
-function renderRows(rows, depth, columns, cellMap) {
-    if (depth === rowHeaderFields.length) {
-        const representative = rows[0];
-        const rowFields = rowHeaderFields.map((f) => representative[f]);
-        const tds = columns.map((col) => {
-            const cell = cellMap.get(JSON.stringify([...rowFields, col]));
-            if (!cell)
-                return "<td></td>";
-            return `<td><a href="${escapeHtml(cell.url)}">${escapeHtml(cell.status)}</a></td>`;
-        });
-        return [`${tds.join("")}</tr>`];
-    }
-    const field = rowHeaderFields[depth];
-    const groups = Map.groupBy(rows, (r) => r[field] ?? "");
-    const result = [];
-    for (const [value, group] of groups) {
-        const childRows = renderRows(group, depth + 1, columns, cellMap);
-        const rowspan = childRows.length;
-        const th = rowspan > 1
-            ? `<th rowspan="${rowspan}">${escapeHtml(value)}</th>`
-            : `<th>${escapeHtml(value)}</th>`;
-        childRows[0] = `${th}${childRows[0]}`;
-        result.push(...childRows);
-    }
-    return result;
-}
-function generateTable(entries) {
-    const columns = [...new Set(entries.map((e) => e[columnField] ?? ""))].sort((a, b) => Number(a) - Number(b));
-    const sorted = [...entries].sort((a, b) => {
-        for (const field of rowHeaderFields) {
-            const av = a[field] ?? "";
-            const bv = b[field] ?? "";
-            if (av < bv)
-                return -1;
-            if (av > bv)
-                return 1;
-        }
-        return 0;
-    });
-    const cellMap = new Map();
-    for (const entry of sorted) {
-        const key = JSON.stringify([...rowHeaderFields.map((f) => entry[f]), entry[columnField]]);
-        cellMap.set(key, entry);
-    }
-    const theadCols = columns.map((v) => `<th>C++${v}</th>`).join("");
-    const thead = `<thead><tr><th colspan="${rowHeaderFields.length}">Environment</th>${theadCols}</tr></thead>`;
-    const rows = renderRows(sorted, 0, columns, cellMap);
-    const tbody = `<tbody>${rows.map((r) => `<tr>${r}`).join("")}</tbody>`;
-    return `<table>${thead}${tbody}</table>`;
-}
-const body = generateTable(rows);
+const body = renderBody({ cells }, { rowHeaderFields, columnField });
 console.log("body is", body);
 if (body) {
     console.log("checking previous comments");

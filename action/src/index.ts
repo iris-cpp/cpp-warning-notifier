@@ -2,6 +2,9 @@ import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
 import { decideCommentAction, statuses } from "./comment.ts";
+import { parseDiagnostics } from "./diagnostics.ts";
+import { renderBody } from "./render.ts";
+import type { Cell } from "./report.ts";
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
   console.log("not a pull request, exiting.");
@@ -40,16 +43,7 @@ const gql = graphql.defaults({ headers: { authorization: `token ${installationTo
 
 // ── Job log processing ──────────────────────────────────────────────────────
 
-interface Row {
-  url: string;
-  status: string;
-  [field: string]: string;
-}
-
-const warningRegex = /warning( .\d+)?:/;
-const errorRegex = /error( .\d+)?:/;
-
-const rows: Row[] = [];
+const cells: Cell[] = [];
 
 const { data: jobList } = await octokit.actions.listJobsForWorkflowRun({
   owner,
@@ -87,22 +81,17 @@ for (const job of jobList.jobs) {
     }
   }
 
+  const diagnostics = parseDiagnostics(jobLog, repo);
+  const warnings = diagnostics.filter((d) => d.severity === "warning");
+  const firstIssue = warnings[0] ?? diagnostics.find((d) => d.severity === "error");
+  console.log(`warnings: ${warnings.length}`);
+
   let compileResult: string = statuses.success;
   let firstIssueLine = 1;
-  const warningIdx = lines.findIndex((line) => line.match(warningRegex));
-  console.log(`warningIdx: ${warningIdx}`);
-  if (warningIdx !== -1) {
-    compileResult = statuses.warning;
-    firstIssueLine = warningIdx - offset + 1;
-    console.log(`matched warning line: ${lines[warningIdx]}`);
-  } else {
-    const errorIdx = lines.findIndex((line) => line.match(errorRegex));
-    console.log(`errorIdx: ${errorIdx}`);
-    if (errorIdx !== -1) {
-      compileResult = statuses.error;
-      firstIssueLine = errorIdx - offset + 1;
-      console.log(`matched error line: ${lines[errorIdx]}`);
-    }
+  if (firstIssue !== undefined) {
+    compileResult = firstIssue.severity === "warning" ? statuses.warning : statuses.error;
+    firstIssueLine = firstIssue.logLine - offset + 1;
+    console.log(`first ${firstIssue.severity}: ${lines[firstIssue.logLine]}`);
   }
 
   const steps = job.steps ?? [];
@@ -124,93 +113,20 @@ for (const job of jobList.jobs) {
     continue;
   }
 
-  rows.push({
-    url: `https://github.com/${owner}/${repo}/actions/runs/${runId}/job/${job.id}#step:${stepId}:${firstIssueLine}`,
+  cells.push({
+    env: jobMatch.groups ?? {},
     status: compileResult,
-    ...jobMatch.groups,
+    url: `https://github.com/${owner}/${repo}/actions/runs/${runId}/job/${job.id}#step:${stepId}:${firstIssueLine}`,
+    warnings,
   });
 }
 
-console.log("rows", rows);
+console.log("cells", cells);
 
 const rowHeaderFields: string[] = JSON.parse(requireEnv("INPUT_ROW_HEADERS"));
 const columnField = requireEnv("INPUT_COLUMN_HEADER");
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function renderRows(
-  rows: Row[],
-  depth: number,
-  columns: string[],
-  cellMap: Map<string, Row>,
-): string[] {
-  if (depth === rowHeaderFields.length) {
-    const representative = rows[0];
-    const rowFields = rowHeaderFields.map((f) => representative[f]);
-    const tds = columns.map((col) => {
-      const cell = cellMap.get(JSON.stringify([...rowFields, col]));
-      if (!cell) return "<td></td>";
-      return `<td><a href="${escapeHtml(cell.url)}">${escapeHtml(cell.status)}</a></td>`;
-    });
-    return [`${tds.join("")}</tr>`];
-  }
-
-  const field = rowHeaderFields[depth];
-  const groups = Map.groupBy(rows, (r) => r[field] ?? "");
-  const result: string[] = [];
-
-  for (const [value, group] of groups) {
-    const childRows = renderRows(group, depth + 1, columns, cellMap);
-    const rowspan = childRows.length;
-    const th =
-      rowspan > 1
-        ? `<th rowspan="${rowspan}">${escapeHtml(value)}</th>`
-        : `<th>${escapeHtml(value)}</th>`;
-
-    childRows[0] = `${th}${childRows[0]}`;
-    result.push(...childRows);
-  }
-
-  return result;
-}
-
-function generateTable(entries: Row[]): string {
-  const columns = [...new Set(entries.map((e) => e[columnField] ?? ""))].sort(
-    (a, b) => Number(a) - Number(b),
-  );
-
-  const sorted = [...entries].sort((a, b) => {
-    for (const field of rowHeaderFields) {
-      const av = a[field] ?? "";
-      const bv = b[field] ?? "";
-      if (av < bv) return -1;
-      if (av > bv) return 1;
-    }
-    return 0;
-  });
-
-  const cellMap = new Map<string, Row>();
-  for (const entry of sorted) {
-    const key = JSON.stringify([...rowHeaderFields.map((f) => entry[f]), entry[columnField]]);
-    cellMap.set(key, entry);
-  }
-
-  const theadCols = columns.map((v) => `<th>C++${v}</th>`).join("");
-  const thead = `<thead><tr><th colspan="${rowHeaderFields.length}">Environment</th>${theadCols}</tr></thead>`;
-
-  const rows = renderRows(sorted, 0, columns, cellMap);
-  const tbody = `<tbody>${rows.map((r) => `<tr>${r}`).join("")}</tbody>`;
-
-  return `<table>${thead}${tbody}</table>`;
-}
-
-const body = generateTable(rows);
+const body = renderBody({ cells }, { rowHeaderFields, columnField });
 
 console.log("body is", body);
 
