@@ -3780,6 +3780,21 @@ const Octokit = Octokit$1.plugin(requestLog, legacyRestEndpointMethods, paginate
   }
 );
 
+const statuses = {
+    success: "✅success",
+    warning: "⚠️warning",
+    error: "❌error",
+};
+// The bot keeps a single comment and overwrites it on every run, so its links
+// always point at the latest run and nobody is notified. A comment someone
+// minimized is brought back only when there is a warning to look at.
+function decideCommentAction(cellStatuses, previous) {
+    if (previous === undefined)
+        return { kind: "create" };
+    const unminimize = cellStatuses.includes(statuses.warning);
+    return { kind: "update", previous, unminimize };
+}
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
     console.log("not a pull request, exiting.");
     process.exit(0);
@@ -3841,12 +3856,12 @@ for (const job of jobList.jobs) {
             continue;
         }
     }
-    let compileResult = "✅success";
+    let compileResult = statuses.success;
     let firstIssueLine = 1;
     const warningIdx = lines.findIndex((line) => line.match(warningRegex));
     console.log(`warningIdx: ${warningIdx}`);
     if (warningIdx !== -1) {
-        compileResult = "⚠️warning";
+        compileResult = statuses.warning;
         firstIssueLine = warningIdx - offset + 1;
         console.log(`matched warning line: ${lines[warningIdx]}`);
     }
@@ -3854,7 +3869,7 @@ for (const job of jobList.jobs) {
         const errorIdx = lines.findIndex((line) => line.match(errorRegex));
         console.log(`errorIdx: ${errorIdx}`);
         if (errorIdx !== -1) {
-            compileResult = "❌error";
+            compileResult = statuses.error;
             firstIssueLine = errorIdx - offset + 1;
             console.log(`matched error line: ${lines[errorIdx]}`);
         }
@@ -3940,7 +3955,7 @@ function generateTable(entries) {
 const body = generateTable(rows);
 console.log("body is", body);
 if (body) {
-    console.log("outdates previous comments");
+    console.log("checking previous comments");
     const { data: comments } = await octokit.issues.listComments({
         owner,
         repo,
@@ -3958,20 +3973,40 @@ if (body) {
     const sortedComments = comments
         .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
         .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    if (sortedComments.length > 0) {
-        const latestComment = sortedComments[sortedComments.length - 1];
-        if (body.includes("warning") || latestComment.body?.includes("warning")) {
-            await gql(`mutation MinimizeComment($id: ID!) {
-          minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
-            clientMutationId
-          }
-        }`, { id: latestComment.node_id });
+    const action = decideCommentAction(rows.map((r) => r.status), sortedComments.at(-1));
+    switch (action.kind) {
+        case "create":
             await postComment();
+            break;
+        case "update":
+            console.log("updating the previous comment");
+            await octokit.issues.updateComment({
+                owner,
+                repo,
+                comment_id: action.previous.id,
+                body,
+            });
+            if (action.unminimize)
+                await unminimizeIfHidden(action.previous.node_id);
+            break;
+    }
+}
+async function unminimizeIfHidden(nodeId) {
+    const { node } = await gql(`query IsMinimized($id: ID!) {
+      node(id: $id) {
+        ... on IssueComment {
+          isMinimized
         }
-    }
-    else {
-        await postComment();
-    }
+      }
+    }`, { id: nodeId });
+    if (!node?.isMinimized)
+        return;
+    console.log("unminimizing the previous comment");
+    await gql(`mutation UnminimizeComment($id: ID!) {
+      unminimizeComment(input: { subjectId: $id }) {
+        clientMutationId
+      }
+    }`, { id: nodeId });
 }
 // ── Worker authentication helper ────────────────────────────────────────────
 async function getInstallationTokenFromWorker(workerUrl) {

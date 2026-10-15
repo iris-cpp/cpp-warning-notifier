@@ -1,6 +1,8 @@
 import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
+import { decideCommentAction, statuses } from "./comment.ts";
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
   console.log("not a pull request, exiting.");
   process.exit(0);
@@ -85,19 +87,19 @@ for (const job of jobList.jobs) {
     }
   }
 
-  let compileResult = "✅success";
+  let compileResult: string = statuses.success;
   let firstIssueLine = 1;
   const warningIdx = lines.findIndex((line) => line.match(warningRegex));
   console.log(`warningIdx: ${warningIdx}`);
   if (warningIdx !== -1) {
-    compileResult = "⚠️warning";
+    compileResult = statuses.warning;
     firstIssueLine = warningIdx - offset + 1;
     console.log(`matched warning line: ${lines[warningIdx]}`);
   } else {
     const errorIdx = lines.findIndex((line) => line.match(errorRegex));
     console.log(`errorIdx: ${errorIdx}`);
     if (errorIdx !== -1) {
-      compileResult = "❌error";
+      compileResult = statuses.error;
       firstIssueLine = errorIdx - offset + 1;
       console.log(`matched error line: ${lines[errorIdx]}`);
     }
@@ -213,7 +215,7 @@ const body = generateTable(rows);
 console.log("body is", body);
 
 if (body) {
-  console.log("outdates previous comments");
+  console.log("checking previous comments");
   const { data: comments } = await octokit.issues.listComments({
     owner,
     repo,
@@ -234,24 +236,49 @@ if (body) {
     .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
     .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-  if (sortedComments.length > 0) {
-    const latestComment = sortedComments[sortedComments.length - 1];
+  const action = decideCommentAction(
+    rows.map((r) => r.status),
+    sortedComments.at(-1),
+  );
 
-    if (body.includes("warning") || latestComment.body?.includes("warning")) {
-      await gql(
-        `mutation MinimizeComment($id: ID!) {
-          minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
-            clientMutationId
-          }
-        }`,
-        { id: latestComment.node_id },
-      );
-
+  switch (action.kind) {
+    case "create":
       await postComment();
-    }
-  } else {
-    await postComment();
+      break;
+    case "update":
+      console.log("updating the previous comment");
+      await octokit.issues.updateComment({
+        owner,
+        repo,
+        comment_id: action.previous.id,
+        body,
+      });
+      if (action.unminimize) await unminimizeIfHidden(action.previous.node_id);
+      break;
   }
+}
+
+async function unminimizeIfHidden(nodeId: string): Promise<void> {
+  const { node } = await gql<{ node: { isMinimized: boolean } | null }>(
+    `query IsMinimized($id: ID!) {
+      node(id: $id) {
+        ... on IssueComment {
+          isMinimized
+        }
+      }
+    }`,
+    { id: nodeId },
+  );
+  if (!node?.isMinimized) return;
+  console.log("unminimizing the previous comment");
+  await gql(
+    `mutation UnminimizeComment($id: ID!) {
+      unminimizeComment(input: { subjectId: $id }) {
+        clientMutationId
+      }
+    }`,
+    { id: nodeId },
+  );
 }
 
 // ── Worker authentication helper ────────────────────────────────────────────
