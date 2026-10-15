@@ -152,7 +152,7 @@ if (body) {
     .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
     .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-  const action = decideCommentAction(body, sortedComments.at(-1));
+  const action = decideCommentAction({ cells }, sortedComments.at(-1));
 
   switch (action.kind) {
     case "create":

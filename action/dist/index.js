@@ -3782,25 +3782,93 @@ const Octokit = Octokit$1.plugin(requestLog, legacyRestEndpointMethods, paginate
   }
 );
 
+// Two builds have "the same" warnings in a cell when the multiset of
+// (file, flag, message) is equal; lines and columns move with unrelated edits.
+function warningDigest(warnings) {
+    const identities = warnings
+        .map((w) => JSON.stringify([w.file ?? "", w.flag ?? "", w.message]))
+        .sort();
+    return createHash("sha256").update(JSON.stringify(identities)).digest("hex");
+}
+function cellKey(env) {
+    return JSON.stringify(Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+const blockPrefix = "<!-- cpp-warning-notifier:v1 ";
+const blockSuffix = " -->";
+const blockPattern = /<!-- cpp-warning-notifier:v1 (.*?) -->/s;
+function encodeBlock(report) {
+    const block = {
+        v: 1,
+        cells: report.cells.map((c) => ({ env: c.env, status: c.status, digest: warningDigest(c.warnings) })),
+    };
+    // "-->" may only occur inside JSON strings here, where > is equivalent.
+    const json = JSON.stringify(block).replaceAll("-->", "--\\u003e");
+    return `${blockPrefix}${json}${blockSuffix}`;
+}
+function decodeBlock(body) {
+    const match = body.match(blockPattern);
+    if (!match)
+        return undefined;
+    let parsed;
+    try {
+        parsed = JSON.parse(match[1]);
+    }
+    catch {
+        return undefined;
+    }
+    return isBlock(parsed) ? parsed : undefined;
+}
+function isBlock(value) {
+    if (typeof value !== "object" || value === null)
+        return false;
+    const { v, cells } = value;
+    return (v === 1 &&
+        Array.isArray(cells) &&
+        cells.every((c) => typeof c === "object" &&
+            c !== null &&
+            typeof c.env === "object" &&
+            c.env !== null &&
+            typeof c.status === "string" &&
+            typeof c.digest === "string"));
+}
+function reportMatchesBlock(report, block) {
+    if (report.cells.length !== block.cells.length)
+        return false;
+    const previous = new Map(block.cells.map((c) => [cellKey(c.env), c]));
+    return report.cells.every((c) => {
+        const p = previous.get(cellKey(c.env));
+        return p !== undefined && p.status === c.status && p.digest === warningDigest(c.warnings);
+    });
+}
+
 const statuses = {
     success: "✅success",
     warning: "⚠️warning",
     error: "❌error",
 };
-// Only a warning justifies notifying reviewers with a fresh comment (and
-// marking the old one outdated). Otherwise the previous comment is edited in
-// place so its links point at the latest run without a new notification.
-function decideCommentAction(newBody, previous) {
+// A fresh comment (with the old one marked outdated) notifies reviewers, so it
+// is posted only when the warnings changed and a warning is involved on either
+// side. Otherwise the previous comment is edited in place, which refreshes its
+// links to the latest run without a notification.
+function decideCommentAction(report, previous) {
     if (previous === undefined)
         return { kind: "create" };
-    if (hasWarning(newBody) || hasWarning(previous.body ?? ""))
+    const body = previous.body ?? "";
+    const block = decodeBlock(body);
+    if (block !== undefined && reportMatchesBlock(report, block))
+        return { kind: "update", previous };
+    const previousWarned = block === undefined
+        ? hasWarningCell(body)
+        : block.cells.some((c) => c.status === statuses.warning);
+    const currentWarns = report.cells.some((c) => c.status === statuses.warning);
+    if (currentWarns || previousWarned)
         return { kind: "replace", previous };
     return { kind: "update", previous };
 }
-// Matches the status cells rendered by generateTable; link URLs may contain
-// "warning" (e.g. a repository name), so only the link text is inspected.
+// Comments posted before the block existed only carry status cells. Link URLs
+// may contain "warning" (e.g. a repository name), so only the link text counts.
 const statusCell = /<td><a href="[^"]*">([^<]*)<\/a><\/td>/g;
-function hasWarning(table) {
+function hasWarningCell(table) {
     return [...table.matchAll(statusCell)].some((m) => m[1] === statuses.warning);
 }
 
@@ -3861,26 +3929,6 @@ function parseDiagnostics(log, repository) {
 }
 function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Two builds have "the same" warnings in a cell when the multiset of
-// (file, flag, message) is equal; lines and columns move with unrelated edits.
-function warningDigest(warnings) {
-    const identities = warnings
-        .map((w) => JSON.stringify([w.file ?? "", w.flag ?? "", w.message]))
-        .sort();
-    return createHash("sha256").update(JSON.stringify(identities)).digest("hex");
-}
-const blockPrefix = "<!-- cpp-warning-notifier:v1 ";
-const blockSuffix = " -->";
-function encodeBlock(report) {
-    const block = {
-        v: 1,
-        cells: report.cells.map((c) => ({ env: c.env, status: c.status, digest: warningDigest(c.warnings) })),
-    };
-    // "-->" may only occur inside JSON strings here, where > is equivalent.
-    const json = JSON.stringify(block).replaceAll("-->", "--\\u003e");
-    return `${blockPrefix}${json}${blockSuffix}`;
 }
 
 // GitHub rejects issue comment bodies longer than this.
@@ -4096,7 +4144,7 @@ if (body) {
     const sortedComments = comments
         .filter((comment) => comment.user?.login === "cppwarningnotifier[bot]")
         .toSorted((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const action = decideCommentAction(body, sortedComments.at(-1));
+    const action = decideCommentAction({ cells }, sortedComments.at(-1));
     switch (action.kind) {
         case "create":
             await postComment();

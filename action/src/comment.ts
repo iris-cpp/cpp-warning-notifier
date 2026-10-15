@@ -1,3 +1,5 @@
+import { type Report, decodeBlock, reportMatchesBlock } from "./report.ts";
+
 export const statuses = {
   success: "✅success",
   warning: "⚠️warning",
@@ -13,22 +15,33 @@ export type CommentAction<T extends CommentLike> =
   | { kind: "replace"; previous: T }
   | { kind: "update"; previous: T };
 
-// Only a warning justifies notifying reviewers with a fresh comment (and
-// marking the old one outdated). Otherwise the previous comment is edited in
-// place so its links point at the latest run without a new notification.
+// A fresh comment (with the old one marked outdated) notifies reviewers, so it
+// is posted only when the warnings changed and a warning is involved on either
+// side. Otherwise the previous comment is edited in place, which refreshes its
+// links to the latest run without a notification.
 export function decideCommentAction<T extends CommentLike>(
-  newBody: string,
+  report: Report,
   previous: T | undefined,
 ): CommentAction<T> {
   if (previous === undefined) return { kind: "create" };
-  if (hasWarning(newBody) || hasWarning(previous.body ?? "")) return { kind: "replace", previous };
+
+  const body = previous.body ?? "";
+  const block = decodeBlock(body);
+  if (block !== undefined && reportMatchesBlock(report, block)) return { kind: "update", previous };
+
+  const previousWarned =
+    block === undefined
+      ? hasWarningCell(body)
+      : block.cells.some((c) => c.status === statuses.warning);
+  const currentWarns = report.cells.some((c) => c.status === statuses.warning);
+  if (currentWarns || previousWarned) return { kind: "replace", previous };
   return { kind: "update", previous };
 }
 
-// Matches the status cells rendered by generateTable; link URLs may contain
-// "warning" (e.g. a repository name), so only the link text is inspected.
+// Comments posted before the block existed only carry status cells. Link URLs
+// may contain "warning" (e.g. a repository name), so only the link text counts.
 const statusCell = /<td><a href="[^"]*">([^<]*)<\/a><\/td>/g;
 
-function hasWarning(table: string): boolean {
+function hasWarningCell(table: string): boolean {
   return [...table.matchAll(statusCell)].some((m) => m[1] === statuses.warning);
 }
