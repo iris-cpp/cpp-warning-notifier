@@ -3832,7 +3832,7 @@ const ignoreNoMarker = requireEnv("INPUT_IGNORE_NO_MARKER") === "true";
 const jobRegex = requireEnv("INPUT_JOB_REGEX");
 const stepRegex = requireEnv("INPUT_STEP_REGEX");
 const workerUrl = requireEnv("INPUT_WORKER_URL");
-// ── Authentication ──────────────────────────────────────────────────────────
+// Authentication
 // Exchange a GitHub OIDC token for an installation access token via the
 // Cloudflare Worker. Requires id-token: write on the job.
 const installationToken = await getInstallationTokenFromWorker(workerUrl);
@@ -4033,7 +4033,7 @@ async function unminimizeIfHidden(nodeId) {
       }
     }`, { id: nodeId });
 }
-// ── Worker authentication helper ────────────────────────────────────────────
+// Worker authentication helper
 async function getInstallationTokenFromWorker(workerUrl) {
     const tokenRequestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
     const tokenRequestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;

@@ -38,7 +38,7 @@ export default {
 };
 
 async function handleTokenRequest(request: Request, env: Env): Promise<Response> {
-  // ── 1. Extract OIDC token ──────────────────────────────────────────────────
+  // 1. Extract OIDC token
   const authHeader = request.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
     return jsonError(
@@ -48,7 +48,7 @@ async function handleTokenRequest(request: Request, env: Env): Promise<Response>
   }
   const oidcToken = authHeader.slice("Bearer ".length);
 
-  // ── 2. Verify GitHub OIDC token ───────────────────────────────────────────
+  // 2. Verify GitHub OIDC token
   // The expected audience is the URL of this worker itself.
   // The GitHub Action must request its OIDC token with this URL as the audience.
   const workerOrigin = new URL(request.url).origin;
@@ -70,7 +70,7 @@ async function handleTokenRequest(request: Request, env: Env): Promise<Response>
   const owner = repository.slice(0, slashIdx);
   const repo = repository.slice(slashIdx + 1);
 
-  // ── 3. Create GitHub App JWT ───────────────────────────────────────────────
+  // 3. Create GitHub App JWT
   let appJwt: string;
   try {
     appJwt = await createAppJwt(env.GITHUB_APP_PRIVATE_KEY, env.GITHUB_APP_ID);
@@ -79,7 +79,7 @@ async function handleTokenRequest(request: Request, env: Env): Promise<Response>
     return jsonError("Internal error: failed to create App JWT", 500);
   }
 
-  // ── 4. Look up the App installation for this repository ───────────────────
+  // 4. Look up the App installation for this repository
   let installationId: number;
   try {
     installationId = await getInstallationId(appJwt, owner, repo);
@@ -96,7 +96,7 @@ async function handleTokenRequest(request: Request, env: Env): Promise<Response>
     return jsonError("Failed to look up GitHub App installation", 500);
   }
 
-  // ── 5. Create an installation access token ────────────────────────────────
+  // 5. Create an installation access token
   let tokenData: { token: string; expires_at: string };
   try {
     tokenData = await createInstallationToken(appJwt, installationId);
@@ -113,7 +113,7 @@ async function handleTokenRequest(request: Request, env: Env): Promise<Response>
   });
 }
 
-// ── GitHub OIDC helpers ────────────────────────────────────────────────────────
+// GitHub OIDC helpers
 
 /**
  * Verify a GitHub Actions OIDC JWT.
@@ -137,7 +137,7 @@ async function verifyGitHubOIDCToken(
   return payload as Record<string, unknown>;
 }
 
-// ── GitHub App JWT helpers ─────────────────────────────────────────────────────
+// GitHub App JWT helpers
 
 /**
  * Create a short-lived GitHub App JWT for authenticating App-level API calls.
@@ -215,7 +215,7 @@ async function createInstallationToken(
   return (await response.json()) as { token: string; expires_at: string };
 }
 
-// ── Utility ────────────────────────────────────────────────────────────────────
+// Utility
 
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
