@@ -35,7 +35,7 @@ const stepRegex = requireEnv("INPUT_STEP_REGEX");
 
 const workerUrl = requireEnv("INPUT_WORKER_URL");
 
-// ── Authentication ──────────────────────────────────────────────────────────
+// Authentication
 // Exchange a GitHub OIDC token for an installation access token via the
 // Cloudflare Worker. Requires id-token: write on the job.
 
@@ -43,7 +43,7 @@ const installationToken = await getInstallationTokenFromWorker(workerUrl);
 const octokit = new Octokit({ auth: installationToken });
 const gql = graphql.defaults({ headers: { authorization: `token ${installationToken}` } });
 
-// ── Job log processing ──────────────────────────────────────────────────────
+// Job log processing
 
 interface Row {
   url: string;
@@ -294,7 +294,7 @@ async function unminimizeIfHidden(nodeId: string): Promise<void> {
   );
 }
 
-// ── Worker authentication helper ────────────────────────────────────────────
+// Worker authentication helper
 
 async function getInstallationTokenFromWorker(workerUrl: string): Promise<string> {
   const tokenRequestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
