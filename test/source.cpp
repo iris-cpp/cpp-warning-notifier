@@ -1,6 +1,6 @@
 #include <iostream>
 
-#warning "WARNING, CHANGED!!!!"
+#warning "WARNING!!!!"
 
 [[nodiscard]] int func() { return 42; }
 
