@@ -37,20 +37,32 @@ describe("renderTable", () => {
 });
 
 describe("renderWarnings", () => {
-  it("lists each cell's warnings under a collapsed summary, escaped, skipping clean cells", () => {
+  it("puts every environment's warnings under one collapsed summary, escaped, skipping clean cells", () => {
     assert.equal(
       renderWarnings({ cells }, layout),
-      "<details><summary>ubuntu GNU C++23: 3 warnings</summary><ul>" +
+      "<details><summary>3 warnings in 1 environment</summary><ul>" +
+        "<li><b>ubuntu GNU C++23</b> (3 warnings)<ul>" +
         "<li><code>src/a.cpp:8</code> unused variable ‘x’ <code>[-Wunused-variable]</code></li>" +
         "<li><code>src/b.cpp:2</code> comparison of &lt;int&gt; &amp; &quot;y&quot;</li>" +
         "<li>libfoo not found</li>" +
-        "</ul></details>",
+        "</ul></li></ul></details>",
     );
   });
 
-  it("uses the singular for one warning", () => {
-    const one = [cell({ os: "u", vendor: "g", cpp: "20" }, "⚠️warning", "u", [unused])];
-    assert.match(renderWarnings({ cells: one }, layout), /: 1 warning<\/summary>/);
+  it("counts warnings and environments across cells, using singulars for one", () => {
+    const two = [
+      cell({ os: "u", vendor: "g", cpp: "20" }, "⚠️warning", "u", [unused]),
+      cell({ os: "u", vendor: "g", cpp: "23" }, "⚠️warning", "v", [unused, shift]),
+    ];
+    const html = renderWarnings({ cells: two }, layout);
+    assert.match(html, /^<details><summary>3 warnings in 2 environments<\/summary>/);
+    assert.match(html, /<b>u g C\+\+20<\/b> \(1 warning\)/);
+    assert.equal(html.split("<details>").length - 1, 1);
+  });
+
+  it("renders nothing when no cell has warnings", () => {
+    const clean = [cell({ os: "u", vendor: "g", cpp: "20" }, "✅success", "u")];
+    assert.equal(renderWarnings({ cells: clean }, layout), "");
   });
 });
 

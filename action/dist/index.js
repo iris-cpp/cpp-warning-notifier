@@ -4001,10 +4001,14 @@ function renderWarning(w) {
     const flag = w.flag === undefined ? "" : ` <code>[${escapeHtml(w.flag)}]</code>`;
     return `<li>${location}${escapeHtml(w.message)}${flag}</li>`;
 }
+function plural(n, noun) {
+    return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
 function renderWarnings(report, layout, limitPerCell = Infinity) {
-    return sortCells(report.cells, layout)
-        .filter((c) => c.warnings.length > 0)
-        .map((c) => {
+    const warned = sortCells(report.cells, layout).filter((c) => c.warnings.length > 0);
+    if (warned.length === 0)
+        return "";
+    const groups = warned.map((c) => {
         const title = [
             ...layout.rowHeaderFields.map((f) => c.env[f] ?? ""),
             `C++${c.env[layout.columnField] ?? ""}`,
@@ -4013,10 +4017,11 @@ function renderWarnings(report, layout, limitPerCell = Infinity) {
         const shown = c.warnings.slice(0, limitPerCell).map(renderWarning);
         if (count > shown.length)
             shown.push(`<li>… and ${count - shown.length} more</li>`);
-        const noun = count === 1 ? "warning" : "warnings";
-        return `<details><summary>${escapeHtml(title)}: ${count} ${noun}</summary><ul>${shown.join("")}</ul></details>`;
-    })
-        .join("");
+        return `<li><b>${escapeHtml(title)}</b> (${plural(count, "warning")})<ul>${shown.join("")}</ul></li>`;
+    });
+    const total = warned.reduce((n, c) => n + c.warnings.length, 0);
+    const summary = `${plural(total, "warning")} in ${plural(warned.length, "environment")}`;
+    return `<details><summary>${summary}</summary><ul>${groups.join("")}</ul></details>`;
 }
 function renderBody(report, layout) {
     const table = renderTable(report, layout);

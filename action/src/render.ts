@@ -96,21 +96,28 @@ function renderWarning(w: Cell["warnings"][number]): string {
   return `<li>${location}${escapeHtml(w.message)}${flag}</li>`;
 }
 
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export function renderWarnings(report: Report, layout: Layout, limitPerCell = Infinity): string {
-  return sortCells(report.cells, layout)
-    .filter((c) => c.warnings.length > 0)
-    .map((c) => {
-      const title = [
-        ...layout.rowHeaderFields.map((f) => c.env[f] ?? ""),
-        `C++${c.env[layout.columnField] ?? ""}`,
-      ].join(" ");
-      const count = c.warnings.length;
-      const shown = c.warnings.slice(0, limitPerCell).map(renderWarning);
-      if (count > shown.length) shown.push(`<li>… and ${count - shown.length} more</li>`);
-      const noun = count === 1 ? "warning" : "warnings";
-      return `<details><summary>${escapeHtml(title)}: ${count} ${noun}</summary><ul>${shown.join("")}</ul></details>`;
-    })
-    .join("");
+  const warned = sortCells(report.cells, layout).filter((c) => c.warnings.length > 0);
+  if (warned.length === 0) return "";
+
+  const groups = warned.map((c) => {
+    const title = [
+      ...layout.rowHeaderFields.map((f) => c.env[f] ?? ""),
+      `C++${c.env[layout.columnField] ?? ""}`,
+    ].join(" ");
+    const count = c.warnings.length;
+    const shown = c.warnings.slice(0, limitPerCell).map(renderWarning);
+    if (count > shown.length) shown.push(`<li>… and ${count - shown.length} more</li>`);
+    return `<li><b>${escapeHtml(title)}</b> (${plural(count, "warning")})<ul>${shown.join("")}</ul></li>`;
+  });
+
+  const total = warned.reduce((n, c) => n + c.warnings.length, 0);
+  const summary = `${plural(total, "warning")} in ${plural(warned.length, "environment")}`;
+  return `<details><summary>${summary}</summary><ul>${groups.join("")}</ul></details>`;
 }
 
 export function renderBody(report: Report, layout: Layout): string {
