@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 function getUserAgent() {
   if (typeof navigator === "object" && "userAgent" in navigator) {
     return navigator.userAgent;
@@ -3795,6 +3797,19 @@ function decideCommentAction(cellStatuses, previous) {
     return { kind: "update", previous, unminimize };
 }
 
+// On pull_request events GITHUB_SHA is the temporary merge commit, so the
+// commit that was pushed has to come from the event payload.
+function headSha(event, fallback) {
+    const sha = event?.pull_request
+        ?.head?.sha;
+    return typeof sha === "string" ? sha : fallback;
+}
+function renderTrailer({ owner, repo, sha, updatedAt }) {
+    const time = `${updatedAt.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+    const url = `https://github.com/${owner}/${repo}/commit/${sha}`;
+    return `<sub>Updated at ${time} for commit <a href="${url}"><code>${sha.slice(0, 7)}</code></a></sub>`;
+}
+
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
     console.log("not a pull request, exiting.");
     process.exit(0);
@@ -3807,6 +3822,8 @@ function requireEnv(name) {
 }
 const githubRepository = requireEnv("GITHUB_REPOSITORY");
 const githubRef = requireEnv("GITHUB_REF");
+const githubSha = requireEnv("GITHUB_SHA");
+const githubEventPath = requireEnv("GITHUB_EVENT_PATH");
 const runId = parseInt(requireEnv("INPUT_RUN_ID"));
 const jobId = parseInt(requireEnv("INPUT_JOB_ID"));
 const [owner, repo] = githubRepository.split("/");
@@ -3952,7 +3969,15 @@ function generateTable(entries) {
     const tbody = `<tbody>${rows.map((r) => `<tr>${r}`).join("")}</tbody>`;
     return `<table>${thead}${tbody}</table>`;
 }
-const body = generateTable(rows);
+const table = generateTable(rows);
+const event = JSON.parse(readFileSync(githubEventPath, "utf8"));
+const trailer = renderTrailer({
+    owner,
+    repo,
+    sha: headSha(event, githubSha),
+    updatedAt: new Date(),
+});
+const body = `${table}\n\n${trailer}`;
 console.log("body is", body);
 if (body) {
     console.log("checking previous comments");

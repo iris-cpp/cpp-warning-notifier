@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
 import { decideCommentAction, statuses } from "./comment.ts";
+import { headSha, renderTrailer } from "./trailer.ts";
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
   console.log("not a pull request, exiting.");
@@ -16,6 +19,8 @@ function requireEnv(name: string): string {
 
 const githubRepository = requireEnv("GITHUB_REPOSITORY");
 const githubRef = requireEnv("GITHUB_REF");
+const githubSha = requireEnv("GITHUB_SHA");
+const githubEventPath = requireEnv("GITHUB_EVENT_PATH");
 
 const runId = parseInt(requireEnv("INPUT_RUN_ID"));
 const jobId = parseInt(requireEnv("INPUT_JOB_ID"));
@@ -210,7 +215,15 @@ function generateTable(entries: Row[]): string {
   return `<table>${thead}${tbody}</table>`;
 }
 
-const body = generateTable(rows);
+const table = generateTable(rows);
+const event: unknown = JSON.parse(readFileSync(githubEventPath, "utf8"));
+const trailer = renderTrailer({
+  owner,
+  repo,
+  sha: headSha(event, githubSha),
+  updatedAt: new Date(),
+});
+const body = `${table}\n\n${trailer}`;
 
 console.log("body is", body);
 
