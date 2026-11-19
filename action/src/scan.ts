@@ -1,8 +1,9 @@
 import { statuses } from "./comment.ts";
 
 const marker = "CPPWARNINGNOTIFIER_LOG_MARKER";
-// The marker printed by the step, as opposed to the runner's echo of the step's script that contains it.
-const markerOutputRegex = new RegExp(`^(\\S+ )?${marker}\\r?$`);
+// The marker printed by the step, as opposed to the runner's echo of the step's script that contains it. The step
+// may append its own step number, which it looks up through the API while it runs.
+const markerOutputRegex = new RegExp(`^(\\S+ )?${marker}(?: +(\\d+))? *\\r?$`);
 
 const warningRegex = /warning( .\d+)?:/;
 const errorRegex = /error( .\d+)?:/;
@@ -13,6 +14,7 @@ export interface LogScan {
   // 1-based, counted from the first line that mentions the marker, which starts the step that prints it.
   readonly firstIssueLine: number;
   readonly issue: string | undefined;
+  readonly markerStep: number | undefined;
 }
 
 // Looks for compiler warnings and errors after the marker's output, so that earlier steps, including the runner's
@@ -25,6 +27,8 @@ export function scanJobLog(jobLog: string): LogScan {
   const offset = hasMarker ? stepStart : 0;
   const markerOutput = hasMarker ? lines.findIndex((line, i) => i > stepStart && markerOutputRegex.test(line)) : -1;
   const searchStart = markerOutput !== -1 ? markerOutput + 1 : offset;
+  const markerStepText = markerOutput !== -1 ? markerOutputRegex.exec(lines[markerOutput])?.[2] : undefined;
+  const common = { hasMarker, markerStep: markerStepText === undefined ? undefined : parseInt(markerStepText) };
 
   const find = (regex: RegExp) => {
     const i = lines.slice(searchStart).findIndex((line) => regex.test(line));
@@ -33,11 +37,11 @@ export function scanJobLog(jobLog: string): LogScan {
 
   const warningIdx = find(warningRegex);
   if (warningIdx !== -1) {
-    return { hasMarker, status: statuses.warning, firstIssueLine: warningIdx - offset + 1, issue: lines[warningIdx] };
+    return { ...common, status: statuses.warning, firstIssueLine: warningIdx - offset + 1, issue: lines[warningIdx] };
   }
   const errorIdx = find(errorRegex);
   if (errorIdx !== -1) {
-    return { hasMarker, status: statuses.error, firstIssueLine: errorIdx - offset + 1, issue: lines[errorIdx] };
+    return { ...common, status: statuses.error, firstIssueLine: errorIdx - offset + 1, issue: lines[errorIdx] };
   }
-  return { hasMarker, status: statuses.success, firstIssueLine: 1, issue: undefined };
+  return { ...common, status: statuses.success, firstIssueLine: 1, issue: undefined };
 }

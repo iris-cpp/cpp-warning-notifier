@@ -3798,8 +3798,9 @@ function decideCommentAction(cellStatuses, previous) {
 }
 
 const marker = "CPPWARNINGNOTIFIER_LOG_MARKER";
-// The marker printed by the step, as opposed to the runner's echo of the step's script that contains it.
-const markerOutputRegex = new RegExp(`^(\\S+ )?${marker}\\r?$`);
+// The marker printed by the step, as opposed to the runner's echo of the step's script that contains it. The step
+// may append its own step number, which it looks up through the API while it runs.
+const markerOutputRegex = new RegExp(`^(\\S+ )?${marker}(?: +(\\d+))? *\\r?$`);
 const warningRegex = /warning( .\d+)?:/;
 const errorRegex = /error( .\d+)?:/;
 // Looks for compiler warnings and errors after the marker's output, so that earlier steps, including the runner's
@@ -3811,19 +3812,31 @@ function scanJobLog(jobLog) {
     const offset = hasMarker ? stepStart : 0;
     const markerOutput = hasMarker ? lines.findIndex((line, i) => i > stepStart && markerOutputRegex.test(line)) : -1;
     const searchStart = markerOutput !== -1 ? markerOutput + 1 : offset;
+    const markerStepText = markerOutput !== -1 ? markerOutputRegex.exec(lines[markerOutput])?.[2] : undefined;
+    const common = { hasMarker, markerStep: markerStepText === undefined ? undefined : parseInt(markerStepText) };
     const find = (regex) => {
         const i = lines.slice(searchStart).findIndex((line) => regex.test(line));
         return i === -1 ? -1 : searchStart + i;
     };
     const warningIdx = find(warningRegex);
     if (warningIdx !== -1) {
-        return { hasMarker, status: statuses.warning, firstIssueLine: warningIdx - offset + 1, issue: lines[warningIdx] };
+        return { ...common, status: statuses.warning, firstIssueLine: warningIdx - offset + 1, issue: lines[warningIdx] };
     }
     const errorIdx = find(errorRegex);
     if (errorIdx !== -1) {
-        return { hasMarker, status: statuses.error, firstIssueLine: errorIdx - offset + 1, issue: lines[errorIdx] };
+        return { ...common, status: statuses.error, firstIssueLine: errorIdx - offset + 1, issue: lines[errorIdx] };
     }
-    return { hasMarker, status: statuses.success, firstIssueLine: 1, issue: undefined };
+    return { ...common, status: statuses.success, firstIssueLine: 1, issue: undefined };
+}
+
+// Returns the number of the step to link to: the one the marker carries, or else the first successful step
+// matching stepRegex.
+function locateStep(steps, markerStep, stepRegex) {
+    if (markerStep !== undefined && steps.some((step) => step.number === markerStep))
+        return markerStep;
+    if (stepRegex === undefined)
+        return undefined;
+    return steps.find((step) => step.name.match(stepRegex) !== null && step.status === "completed" && step.conclusion === "success")?.number;
 }
 
 // On pull_request events GITHUB_SHA is the temporary merge commit, so the
@@ -3859,7 +3872,7 @@ const [owner, repo] = githubRepository.split("/");
 const pullRequestNumber = parseInt(githubRef.split("/")[2]);
 const ignoreNoMarker = requireEnv("INPUT_IGNORE_NO_MARKER") === "true";
 const jobRegex = requireEnv("INPUT_JOB_REGEX");
-const stepRegex = requireEnv("INPUT_STEP_REGEX");
+const stepRegex = process.env.INPUT_STEP_REGEX || undefined;
 const workerUrl = requireEnv("INPUT_WORKER_URL");
 // Authentication
 // Exchange a GitHub OIDC token for an installation access token via the
@@ -3888,15 +3901,12 @@ for (const job of jobList.jobs) {
         continue;
     }
     const jobLog = await response.text();
-    const { hasMarker, status: compileResult, firstIssueLine, issue } = scanJobLog(jobLog);
+    const { hasMarker, status: compileResult, firstIssueLine, issue, markerStep } = scanJobLog(jobLog);
     if (!hasMarker && ignoreNoMarker)
         continue;
     console.log(`${compileResult} at line ${firstIssueLine}${issue === undefined ? "" : `: ${issue}`}`);
     const steps = job.steps ?? [];
-    const stepIndex = steps.findIndex((step) => step.name.match(stepRegex) &&
-        step.status === "completed" &&
-        step.conclusion === "success");
-    const stepId = (stepIndex === -1 ? steps.length : stepIndex) + 1;
+    const stepId = locateStep(steps, markerStep, stepRegex) ?? steps.length + 1;
     console.log(`stepId is ${stepId}`);
     console.log(`job name is "${job.name}"`);
     const jobMatch = job.name.match(jobRegex);

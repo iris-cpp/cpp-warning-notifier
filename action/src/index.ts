@@ -5,6 +5,7 @@ import { graphql } from "@octokit/graphql";
 
 import { decideCommentAction } from "./comment.ts";
 import { scanJobLog } from "./scan.ts";
+import { locateStep } from "./step.ts";
 import { headSha, renderTrailer } from "./trailer.ts";
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
@@ -32,7 +33,7 @@ const pullRequestNumber = parseInt(githubRef.split("/")[2]);
 const ignoreNoMarker = requireEnv("INPUT_IGNORE_NO_MARKER") === "true";
 
 const jobRegex = requireEnv("INPUT_JOB_REGEX");
-const stepRegex = requireEnv("INPUT_STEP_REGEX");
+const stepRegex = process.env.INPUT_STEP_REGEX || undefined;
 
 const workerUrl = requireEnv("INPUT_WORKER_URL");
 
@@ -77,18 +78,12 @@ for (const job of jobList.jobs) {
   }
   const jobLog = await response.text();
 
-  const { hasMarker, status: compileResult, firstIssueLine, issue } = scanJobLog(jobLog);
+  const { hasMarker, status: compileResult, firstIssueLine, issue, markerStep } = scanJobLog(jobLog);
   if (!hasMarker && ignoreNoMarker) continue;
   console.log(`${compileResult} at line ${firstIssueLine}${issue === undefined ? "" : `: ${issue}`}`);
 
   const steps = job.steps ?? [];
-  const stepIndex = steps.findIndex(
-    (step) =>
-      step.name.match(stepRegex) &&
-      step.status === "completed" &&
-      step.conclusion === "success",
-  );
-  const stepId = (stepIndex === -1 ? steps.length : stepIndex) + 1;
+  const stepId = locateStep(steps, markerStep, stepRegex) ?? steps.length + 1;
 
   console.log(`stepId is ${stepId}`);
   console.log(`job name is "${job.name}"`);

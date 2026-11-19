@@ -29,7 +29,13 @@ describe("scanJobLog", () => {
         "[100%] Built target test",
       ),
     );
-    assert.deepEqual(result, { hasMarker: true, status: statuses.success, firstIssueLine: 1, issue: undefined });
+    assert.deepEqual(result, {
+      hasMarker: true,
+      status: statuses.success,
+      firstIssueLine: 1,
+      issue: undefined,
+      markerStep: undefined,
+    });
   });
 
   it("reports an error after the marker by its line in the step", () => {
@@ -41,6 +47,7 @@ describe("scanJobLog", () => {
       status: statuses.error,
       firstIssueLine: 7,
       issue: "2026-11-19T01:00:00.0000000Z foo.cpp(2,3): error C2131: expression did not evaluate to a constant",
+      markerStep: undefined,
     });
   });
 
@@ -51,6 +58,7 @@ describe("scanJobLog", () => {
       status: statuses.warning,
       firstIssueLine: 7,
       issue: "2026-11-19T01:00:00.0000000Z b.cpp:2:2: warning: y",
+      markerStep: undefined,
     });
   });
 
@@ -61,6 +69,7 @@ describe("scanJobLog", () => {
       status: statuses.warning,
       firstIssueLine: 2,
       issue: "2026-11-19T01:00:00.0000000Z a.cpp:1:1: warning: y",
+      markerStep: undefined,
     });
   });
 
@@ -71,6 +80,47 @@ describe("scanJobLog", () => {
       status: statuses.error,
       firstIssueLine: 5,
       issue: "2026-11-19T01:00:00.0000000Z a.cpp:1:1: error: x",
+      markerStep: undefined,
+    });
+  });
+
+  it("reads the step number the marker's output carries", () => {
+    const result = scanJobLog(
+      log(
+        '##[group]Run echo "CPPWARNINGNOTIFIER_LOG_MARKER $(gh api ...)"',
+        'echo "CPPWARNINGNOTIFIER_LOG_MARKER $(gh api ...)"',
+        "##[endgroup]",
+        "CPPWARNINGNOTIFIER_LOG_MARKER 4",
+        "a.cpp:1:1: warning: y",
+      ),
+    );
+    assert.deepEqual(result, {
+      hasMarker: true,
+      status: statuses.warning,
+      firstIssueLine: 5,
+      issue: "2026-11-19T01:00:00.0000000Z a.cpp:1:1: warning: y",
+      markerStep: 4,
+    });
+  });
+
+  it("has no step number when the marker's output carries none", () => {
+    // What the marker line prints when the command that looks up the step number fails.
+    const result = scanJobLog(
+      log(
+        '##[group]Run echo "CPPWARNINGNOTIFIER_LOG_MARKER $(gh api ...)"',
+        'echo "CPPWARNINGNOTIFIER_LOG_MARKER $(gh api ...)"',
+        'echo "warning: in the script"',
+        "##[endgroup]",
+        "CPPWARNINGNOTIFIER_LOG_MARKER ",
+        "a.cpp:1:1: error: x",
+      ),
+    );
+    assert.deepEqual(result, {
+      hasMarker: true,
+      status: statuses.error,
+      firstIssueLine: 6,
+      issue: "2026-11-19T01:00:00.0000000Z a.cpp:1:1: error: x",
+      markerStep: undefined,
     });
   });
 });

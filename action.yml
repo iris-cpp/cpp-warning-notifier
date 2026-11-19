@@ -17,8 +17,10 @@ inputs:
     required: true
   JOB_REGEX:
     required: true
+  # Picks the step to link to when the marker's output does not carry the
+  # step's number
   STEP_REGEX:
-    required: true
+    required: false
   ROW_HEADERS:
     required: true
   COLUMN_HEADER:
