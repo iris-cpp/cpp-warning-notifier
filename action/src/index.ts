@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { Octokit } from "@octokit/rest";
 import { graphql } from "@octokit/graphql";
 
-import { decideCommentAction, statuses } from "./comment.ts";
+import { decideCommentAction } from "./comment.ts";
+import { scanJobLog } from "./scan.ts";
 import { headSha, renderTrailer } from "./trailer.ts";
 
 if (!process.env.GITHUB_REF?.startsWith("refs/pull/")) {
@@ -51,9 +52,6 @@ interface Row {
   [field: string]: string;
 }
 
-const warningRegex = /warning( .\d+)?:/;
-const errorRegex = /error( .\d+)?:/;
-
 const rows: Row[] = [];
 
 const { data: jobList } = await octokit.actions.listJobsForWorkflowRun({
@@ -79,36 +77,9 @@ for (const job of jobList.jobs) {
   }
   const jobLog = await response.text();
 
-  const lines = jobLog.split("\n");
-  console.log(`total lines: ${lines.length}`);
-
-  let offset = 0;
-  const offsetIdx = lines.findIndex((line) => line.match("CPPWARNINGNOTIFIER_LOG_MARKER"));
-  if (offsetIdx !== -1) {
-    offset = offsetIdx;
-  } else {
-    if (ignoreNoMarker) {
-      continue;
-    }
-  }
-
-  let compileResult: string = statuses.success;
-  let firstIssueLine = 1;
-  const warningIdx = lines.findIndex((line) => line.match(warningRegex));
-  console.log(`warningIdx: ${warningIdx}`);
-  if (warningIdx !== -1) {
-    compileResult = statuses.warning;
-    firstIssueLine = warningIdx - offset + 1;
-    console.log(`matched warning line: ${lines[warningIdx]}`);
-  } else {
-    const errorIdx = lines.findIndex((line) => line.match(errorRegex));
-    console.log(`errorIdx: ${errorIdx}`);
-    if (errorIdx !== -1) {
-      compileResult = statuses.error;
-      firstIssueLine = errorIdx - offset + 1;
-      console.log(`matched error line: ${lines[errorIdx]}`);
-    }
-  }
+  const { hasMarker, status: compileResult, firstIssueLine, issue } = scanJobLog(jobLog);
+  if (!hasMarker && ignoreNoMarker) continue;
+  console.log(`${compileResult} at line ${firstIssueLine}${issue === undefined ? "" : `: ${issue}`}`);
 
   const steps = job.steps ?? [];
   const stepIndex = steps.findIndex(

@@ -3797,6 +3797,35 @@ function decideCommentAction(cellStatuses, previous) {
     return { kind: "update", previous, unminimize };
 }
 
+const marker = "CPPWARNINGNOTIFIER_LOG_MARKER";
+// The marker printed by the step, as opposed to the runner's echo of the step's script that contains it.
+const markerOutputRegex = new RegExp(`^(\\S+ )?${marker}\\r?$`);
+const warningRegex = /warning( .\d+)?:/;
+const errorRegex = /error( .\d+)?:/;
+// Looks for compiler warnings and errors after the marker's output, so that earlier steps, including the runner's
+// echo of their scripts, are not taken for compiler output.
+function scanJobLog(jobLog) {
+    const lines = jobLog.split("\n");
+    const stepStart = lines.findIndex((line) => line.includes(marker));
+    const hasMarker = stepStart !== -1;
+    const offset = hasMarker ? stepStart : 0;
+    const markerOutput = hasMarker ? lines.findIndex((line, i) => i > stepStart && markerOutputRegex.test(line)) : -1;
+    const searchStart = markerOutput !== -1 ? markerOutput + 1 : offset;
+    const find = (regex) => {
+        const i = lines.slice(searchStart).findIndex((line) => regex.test(line));
+        return i === -1 ? -1 : searchStart + i;
+    };
+    const warningIdx = find(warningRegex);
+    if (warningIdx !== -1) {
+        return { hasMarker, status: statuses.warning, firstIssueLine: warningIdx - offset + 1, issue: lines[warningIdx] };
+    }
+    const errorIdx = find(errorRegex);
+    if (errorIdx !== -1) {
+        return { hasMarker, status: statuses.error, firstIssueLine: errorIdx - offset + 1, issue: lines[errorIdx] };
+    }
+    return { hasMarker, status: statuses.success, firstIssueLine: 1, issue: undefined };
+}
+
 // On pull_request events GITHUB_SHA is the temporary merge commit, so the
 // commit that was pushed has to come from the event payload.
 function headSha(event, fallback) {
@@ -3838,8 +3867,6 @@ const workerUrl = requireEnv("INPUT_WORKER_URL");
 const installationToken = await getInstallationTokenFromWorker(workerUrl);
 const octokit = new Octokit({ auth: installationToken });
 const gql = graphql2.defaults({ headers: { authorization: `token ${installationToken}` } });
-const warningRegex = /warning( .\d+)?:/;
-const errorRegex = /error( .\d+)?:/;
 const rows = [];
 const { data: jobList } = await octokit.actions.listJobsForWorkflowRun({
     owner,
@@ -3861,36 +3888,10 @@ for (const job of jobList.jobs) {
         continue;
     }
     const jobLog = await response.text();
-    const lines = jobLog.split("\n");
-    console.log(`total lines: ${lines.length}`);
-    let offset = 0;
-    const offsetIdx = lines.findIndex((line) => line.match("CPPWARNINGNOTIFIER_LOG_MARKER"));
-    if (offsetIdx !== -1) {
-        offset = offsetIdx;
-    }
-    else {
-        if (ignoreNoMarker) {
-            continue;
-        }
-    }
-    let compileResult = statuses.success;
-    let firstIssueLine = 1;
-    const warningIdx = lines.findIndex((line) => line.match(warningRegex));
-    console.log(`warningIdx: ${warningIdx}`);
-    if (warningIdx !== -1) {
-        compileResult = statuses.warning;
-        firstIssueLine = warningIdx - offset + 1;
-        console.log(`matched warning line: ${lines[warningIdx]}`);
-    }
-    else {
-        const errorIdx = lines.findIndex((line) => line.match(errorRegex));
-        console.log(`errorIdx: ${errorIdx}`);
-        if (errorIdx !== -1) {
-            compileResult = statuses.error;
-            firstIssueLine = errorIdx - offset + 1;
-            console.log(`matched error line: ${lines[errorIdx]}`);
-        }
-    }
+    const { hasMarker, status: compileResult, firstIssueLine, issue } = scanJobLog(jobLog);
+    if (!hasMarker && ignoreNoMarker)
+        continue;
+    console.log(`${compileResult} at line ${firstIssueLine}${issue === undefined ? "" : `: ${issue}`}`);
     const steps = job.steps ?? [];
     const stepIndex = steps.findIndex((step) => step.name.match(stepRegex) &&
         step.status === "completed" &&
